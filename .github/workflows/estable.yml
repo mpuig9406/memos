@@ -1,0 +1,51 @@
+# Mantiene la rama «estable» en la última versión publicada de Memos
+# (usememos/memos). WoPanel despliega esa rama: al moverla, el webhook del
+# repo avisa al panel y la app se actualiza sola.
+name: Rama estable
+
+on:
+  schedule:
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: estable
+  cancel-in-progress: false
+
+jobs:
+  estable:
+    if: github.repository == 'mpuig9406/memos'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Buscar la última versión estable
+        id: v
+        run: |
+          tags=$(git ls-remote --tags --refs https://github.com/usememos/memos.git | sed 's#.*refs/tags/##')
+          # Desde 2026 las versiones van por fecha (26.10.0); antes, v0.x.y.
+          # Sin «-rc»: solo las publicadas.
+          cal=$(printf '%s\n' "$tags" | grep -E '^[1-9][0-9]\.[0-9]{1,2}\.[0-9]+$' | sort -V | tail -n 1 || true)
+          old=$(printf '%s\n' "$tags" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)
+          tag=${cal:-$old}
+          if [ -z "$tag" ]; then echo "No hay versiones publicadas"; exit 1; fi
+          echo "Última versión estable: $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Mover la rama estable
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          git init -q .
+          git fetch -q https://github.com/usememos/memos.git "refs/tags/$TAG:refs/tags/$TAG"
+          sha=$(git rev-parse "$TAG^{commit}")
+          cur=$(git ls-remote "https://github.com/$REPO.git" refs/heads/estable | cut -f1)
+          if [ "$sha" = "$cur" ]; then
+            echo "estable ya está en $TAG ($sha)"
+            exit 0
+          fi
+          git push -f "https://x-access-token:$GH_TOKEN@github.com/$REPO.git" "$sha:refs/heads/estable"
+          echo "estable: ${cur:-nueva} -> $sha ($TAG)" >> "$GITHUB_STEP_SUMMARY"
